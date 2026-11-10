@@ -1,6 +1,6 @@
 {
   "name": "hexo-tengxun-eucalyptus",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Hexo 腾讯视频追剧页插件：同步账号加追/预约列表，自动分组生成卡片网格页面",
   "main": "index.js",
   "keywords": [
@@ -15,6 +15,7 @@
   "author": "ShiningStar <shiningstarli2023@gmail.com>",
   "license": "MIT",
   "engines": {
+    "node": ">=18",
     "hexo": ">=5.0.0"
   }
 }

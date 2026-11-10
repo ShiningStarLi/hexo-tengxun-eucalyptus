@@ -30,11 +30,32 @@ const {
 const { renderPage } = require('./lib/renderer');
 
 // 默认分组（可在 _config.yml 里覆盖）
+const GROUP_KEYS = ['airing', 'finished', 'reserved'];
 const DEFAULT_GROUPS = [
   { key: 'airing', label: '追剧' },
   { key: 'finished', label: '已完结' },
   { key: 'reserved', label: '预约' },
 ];
+
+function normalizeGroups(hexo, raw) {
+  const list = Array.isArray(raw) && raw.length ? raw : DEFAULT_GROUPS;
+  const seen = new Set();
+  const out = [];
+  list.forEach((g) => {
+    const key = g && g.key;
+    if (!GROUP_KEYS.includes(key)) {
+      hexo.log.warn(`[zhuiju] 忽略未知分组 key「${key}」，只支持 ${GROUP_KEYS.join(' / ')}（label 可随便改）`);
+      return;
+    }
+    if (seen.has(key)) {
+      hexo.log.warn(`[zhuiju] 忽略重复分组「${key}」`);
+      return;
+    }
+    seen.add(key);
+    out.push({ key, label: g.label || key });
+  });
+  return out.length ? out : DEFAULT_GROUPS;
+}
 
 // ----- 工具 -----
 
@@ -50,15 +71,19 @@ function readJSON(file, fallback) {
   }
 }
 
+function normalizeCookie(raw) {
+  if (!raw) return '';
+  return String(raw).replace(/^\s*cookie\s*:\s*/i, '').replace(/\s+/g, ' ').trim();
+}
+
 function readCookie(hexo) {
-  if (process.env.VQQ_COOKIE && process.env.VQQ_COOKIE.trim()) return process.env.VQQ_COOKIE.trim();
+  if (process.env.VQQ_COOKIE) {
+    const env = normalizeCookie(process.env.VQQ_COOKIE);
+    if (env) return env;
+  }
   const cookieFile = path.join(hexo.base_dir, '.vqq-cookie');
   if (!fs.existsSync(cookieFile)) return '';
-  return fs
-    .readFileSync(cookieFile, 'utf8')
-    .replace(/^\s*cookie\s*:\s*/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeCookie(fs.readFileSync(cookieFile, 'utf8'));
 }
 
 // 原子写 JSON：先确保目录存在，再临时文件 rename，防止中断留半截
@@ -71,9 +96,7 @@ function writeJSON(file, data) {
 
 function pageConfig(hexo) {
   const userCfg = hexo.config.zhuiju_vqq || hexo.config.zhuiju || {};
-  const groups = Array.isArray(userCfg.groups) && userCfg.groups.length
-    ? userCfg.groups
-    : DEFAULT_GROUPS;
+  const groups = normalizeGroups(hexo, userCfg.groups);
   return {
     enable: userCfg.enable !== false,
     path: userCfg.path || 'zhuijus/',
@@ -118,11 +141,19 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   let list;
   let reserved = [];
 
+  // reservedKey 提前定义，空列表保护和 scene=2 都要用
+  const reservedKey = groups.find((g) => g.key === 'reserved')?.key || 'reserved';
+  const reservedLabel = groups.find((g) => g.key === reservedKey)?.label || '预约';
+
   // scene=1 加追（追剧 + 已完结）
   try {
     list = await fetchAlbumList(cookie, 1);
-    // 空列表保护：Cookie 半失效 / 风控时返回 ret=0 但 list 为空
-    if (!list.length && previousItems.length) {
+    // 空列表保护：只有本来就有追剧/已完结缓存时才把空列表当登录态异常；
+    // 只用预约的用户，加追本来就是 0 条，不能因此阻断预约同步
+    const cachedAiring = groups
+      .filter((g) => g.key !== reservedKey)
+      .reduce((sum, g) => sum + ((cached[g.key] || []).length), 0);
+    if (!list.length && cachedAiring) {
       hexo.log.warn('加追列表返回 0 条，疑似登录态异常，保留旧数据');
       regroupFromCache(cached, overrides, outFile, groups, hexo);
       return;
@@ -138,8 +169,6 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   }
 
   // scene=2 预约
-  const reservedKey = groups.find((g) => g.key === 'reserved')?.key || 'reserved';
-  const reservedLabel = groups.find((g) => g.key === reservedKey)?.label || '预约';
   try {
     reserved = await fetchAlbumList(cookie, 2);
   } catch (error) {
@@ -207,7 +236,8 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
     }
 
     item.finished = mapped.finished;
-    item.note = mapped.note;
+    // note：预约从缓存回退时 mapped.note 是空（缓存条目没有 second_title），要保留 previous 的
+    item.note = mapped.note || previous.note || '';
     if (!item.cover && mapped.cover) item.cover = mapped.cover;
     if (isReserved) {
       item.episode = ''; item.progressText = ''; item.progress = null;
@@ -227,13 +257,15 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
     reservedResults.push(await buildItem(raw, true));
   }
 
+  // 同一部剧可能同时在 scene=1 和 scene=2（加追又预约），收集 cid 去重
+  const seenCids = new Set();
   listResults.forEach((built) => {
     if (!built) return;
     const { item, mapped } = built;
+    seenCids.add(item.cid);
     const rawKey = groups.some((g) => g.key === overrides[mapped.cid])
       ? overrides[mapped.cid]
       : autoGroup(item);
-    // 如果 autoGroup 返回的 key 不在用户配置的 groups 里（用户删了 airing/finished），fallback 到第一个分组
     const key = groups.some((g) => g.key === rawKey) ? rawKey : groups[0].key;
     (result[key] || (result[key] = [])).push(item);
     const groupLabel = (groups.find((g) => g.key === key) || {}).label || key;
@@ -243,6 +275,8 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   });
   reservedResults.forEach((built) => {
     if (!built) return;
+    // 同一部剧已经在 scene=1（加追/已完结）里出现过，跳过避免重复渲染
+    if (seenCids.has(built.item.cid)) return;
     (result[reservedKey] || (result[reservedKey] = [])).push(built.item);
     hexo.log.info(`[${reservedLabel}] ${built.item.title} ${built.mapped.note || ''}`);
   });
