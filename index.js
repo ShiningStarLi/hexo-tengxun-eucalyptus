@@ -120,6 +120,8 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   }
 
   // scene=2 预约
+  const reservedKey = groups.find((g) => g.key === 'reserved')?.key || 'reserved';
+  const reservedLabel = groups.find((g) => g.key === reservedKey)?.label || '预约';
   try {
     reserved = await fetchAlbumList(cookie, 2);
   } catch (error) {
@@ -139,7 +141,7 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
       failed += 1;
       return null;
     }
-    const previous = previousItems.find((item) => item && item.cid === mapped.cid);
+    const previous = previousItems.find((item) => item && item.cid === mapped.cid) || {};
     const episodeChanged = !previous.episode || mapped.episode !== previous.episode;
     const coverMissing = !previous.cover && mapped.cover;
     const skipFetch = isReserved || (!episodeChanged && !coverMissing);
@@ -206,8 +208,8 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   });
   reservedResults.forEach((built) => {
     if (!built) return;
-    result.reserved.push(built.item);
-    hexo.log.info(`[预约] ${built.item.title} ${built.mapped.note || ''}`);
+    (result[reservedKey] || (result[reservedKey] = [])).push(built.item);
+    hexo.log.info(`[${reservedLabel}] ${built.item.title} ${built.mapped.note || ''}`);
   });
 
   const total = groups.reduce((sum, g) => sum + result[g.key].length, 0);
