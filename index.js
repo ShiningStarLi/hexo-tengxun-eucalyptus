@@ -61,6 +61,14 @@ function readCookie(hexo) {
     .trim();
 }
 
+// 原子写 JSON：先确保目录存在，再临时文件 rename，防止中断留半截
+function writeJSON(file, data) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  fs.renameSync(tmp, file);
+}
+
 function pageConfig(hexo) {
   const userCfg = hexo.config.zhuiju_vqq || hexo.config.zhuiju || {};
   const groups = Array.isArray(userCfg.groups) && userCfg.groups.length
@@ -82,19 +90,23 @@ function pageConfig(hexo) {
 // 用缓存数据重新按分组写回（Cookie 过期兜底）
 function regroupFromCache(cached, overrides, outFile, groups, hexo) {
   const prev = groups.reduce((a, g) => a.concat(cached[g.key] || []), []);
+  const reservedKey = groups.find((g) => g.key === 'reserved')?.key || 'reserved';
   const result = {};
   groups.forEach((g) => { result[g.key] = []; });
   prev.forEach((item) => {
-    const key = groups.some((g) => g.key === overrides[item.cid])
-      ? overrides[item.cid]
-      : item.finished ? 'finished' : 'airing';
+    // 先看用户 overrides → 再看它之前在哪个缓存分组（保留预约身份）→ 最后按 finished 二分
+    const rawKey = overrides[item.cid]
+      // item.note 含「即将上线」可以弱判定为预约（兜底）
+      || (cached[reservedKey]?.some((r) => r.cid === item.cid) ? reservedKey : null)
+      || (item.finished ? 'finished' : 'airing');
+    const key = groups.some((g) => g.key === rawKey) ? rawKey : groups[0].key;
     item.updated = new Date().toISOString().slice(0, 10);
     item.note = item.note || '';
-    result[key].push(item);
+    (result[key] || (result[key] = [])).push(item);
   });
   const total = prev.length;
   const payload = Object.assign({ mode: 'account', syncedAt: new Date().toISOString() }, result);
-  fs.writeFileSync(outFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  writeJSON(outFile, payload);
   const summary = groups.map((g) => `${g.label} ${result[g.key].length}`).join(' / ');
   hexo.log.warn(`Cookie 已过期，用缓存重新分组：${total} 部（${summary}）`);
 }
@@ -109,6 +121,12 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   // scene=1 加追（追剧 + 已完结）
   try {
     list = await fetchAlbumList(cookie, 1);
+    // 空列表保护：Cookie 半失效 / 风控时返回 ret=0 但 list 为空
+    if (!list.length && previousItems.length) {
+      hexo.log.warn('加追列表返回 0 条，疑似登录态异常，保留旧数据');
+      regroupFromCache(cached, overrides, outFile, groups, hexo);
+      return;
+    }
   } catch (error) {
     hexo.log.warn(`${error.message}，Cookie 已过期，用缓存数据兜底`);
     if (previousItems.length) {
@@ -125,7 +143,8 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   try {
     reserved = await fetchAlbumList(cookie, 2);
   } catch (error) {
-    hexo.log.warn(`预约列表没取到（${error.message}），这次先跳过`);
+    hexo.log.warn(`预约列表没取到（${error.message}），这次先跳过，沿用上次缓存`);
+    reserved = cached[reservedKey] || [];
   }
 
   const result = {};
@@ -142,16 +161,30 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
       return null;
     }
     const previous = previousItems.find((item) => item && item.cid === mapped.cid) || {};
-    const episodeChanged = !previous.episode || mapped.episode !== previous.episode;
+    // previous.episode 来自 fetchItem 的 video_ids.length（靠谱），mapped.episode 来自列表标签（常有缺失）
+    // 两者取非空的做基线，避免标签缺失时永久触发重抓
+    const baselineEpisode = previous.episode || mapped.episode;
+    const newEpisode = mapped.episode || previous.episode;
+    const episodeChanged = !baselineEpisode || newEpisode !== baselineEpisode;
     const coverMissing = !previous.cover && mapped.cover;
     const skipFetch = isReserved || (!episodeChanged && !coverMissing);
 
     let item;
     if (skipFetch) {
-      item = Object.assign({}, previous, {
-        updated: new Date().toISOString().slice(0, 10),
-        cover: sizedCover(previous.cover || mapped.cover),
-      });
+      // skipFetch（预约一律走 / 或增量未变）时，previous 可能是空 {}，必须先用 mapped 兜底
+      item = Object.assign(
+        {
+          cid: mapped.cid,
+          title: mapped.title,
+          link: mapped.link,
+          cover: sizedCover(mapped.cover),
+        },
+        previous,
+        {
+          updated: new Date().toISOString().slice(0, 10),
+          cover: sizedCover(previous.cover || mapped.cover),
+        }
+      );
       skipped += 1;
       hexo.log.debug(`[跳过详情] ${mapped.title}${mapped.episode ? `（${mapped.episode}）` : ''}`);
     } else {
@@ -197,10 +230,12 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
   listResults.forEach((built) => {
     if (!built) return;
     const { item, mapped } = built;
-    const key = groups.some((g) => g.key === overrides[mapped.cid])
+    const rawKey = groups.some((g) => g.key === overrides[mapped.cid])
       ? overrides[mapped.cid]
       : autoGroup(item);
-    result[key].push(item);
+    // 如果 autoGroup 返回的 key 不在用户配置的 groups 里（用户删了 airing/finished），fallback 到第一个分组
+    const key = groups.some((g) => g.key === rawKey) ? rawKey : groups[0].key;
+    (result[key] || (result[key] = [])).push(item);
     const groupLabel = (groups.find((g) => g.key === key) || {}).label || key;
     hexo.log.info(
       `[${groupLabel}] ${item.title}${item.score ? `（${item.score} 分）` : ''} ${mapped.progressText}`
@@ -214,7 +249,7 @@ async function refreshFromAccount(hexo, cookie, outFile, groups) {
 
   const total = groups.reduce((sum, g) => sum + result[g.key].length, 0);
   const payload = Object.assign({ mode: 'account', syncedAt: new Date().toISOString() }, result);
-  fs.writeFileSync(outFile, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  writeJSON(outFile, payload);
   const summary = groups.map((g) => `${g.label} ${result[g.key].length}`).join(' / ');
   const detail = skipped > 0 ? `，${skipped} 部集数未变跳过详情` : '';
   hexo.log.info(`已同步：${total} 部（${summary}，${failed} 部信息不全${detail}）→ ${outFile}`);
@@ -260,7 +295,7 @@ async function refreshFromManual(hexo, srcFile, outFile, groups) {
     }
   }
 
-  fs.writeFileSync(outFile, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
+  writeJSON(outFile, result);
   hexo.log.info(`手动清单已更新：${total} 部成功，${failed} 部失败 → ${outFile}`);
 }
 
@@ -285,8 +320,8 @@ hexo.extend.console.register(
   '抓取腾讯视频追剧数据并生成追剧页（-u 更新数据）',
   { options: [{ name: '-u, --update', desc: 'Update data' }] },
   function (args) {
-    if (!args.u) {
-      this.log.info('用法：npx hexo zhuiju -u');
+    if (!args.u && !args.update) {
+      this.log.info('用法：npx hexo zhuiju -u  或  npx hexo zhuiju --update');
       return;
     }
     return refresh(this);

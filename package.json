@@ -1,6 +1,6 @@
 {
   "name": "hexo-tengxun-eucalyptus",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Hexo 腾讯视频追剧页插件：同步账号加追/预约列表，自动分组生成卡片网格页面",
   "main": "index.js",
   "keywords": [
