@@ -1,0 +1,27 @@
+{
+  "name": "hexo-tengxun-eucalyptus",
+  "version": "1.0.2",
+  "description": "Hexo 腾讯视频追剧页插件：同步账号加追/预约列表，自动分组生成卡片网格页面",
+  "main": "index.js",
+  "keywords": [
+    "hexo",
+    "hexo-plugin",
+    "tencent-video",
+    "腾讯视频",
+    "追剧",
+    "追番",
+    "zhuiju"
+  ],
+  "author": "ShiningStar <shiningstarli2023@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShiningStarLi/hexo-tengxun-eucalyptus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ShiningStarLi/hexo-tengxun-eucalyptus/issues"
+  },
+  "engines": {
+    "hexo": ">=5.0.0"
+  }
+}
