@@ -32,7 +32,7 @@ zhuiju_vqq:
   quote: ''                   # 顶部引言（可选）
   columns: 5                  # 桌面端卡片列数
   primary_color: ''           # 留空让主题 CSS 变量自动接管；写死如 '#3db4f2' 则强制
-  groups:                     # 分组顺序和标签名（最多 3 组）
+  groups:                     # 分组顺序和标签名（key 固定为 airing/finished/reserved，只能改 label）
     - key: airing
       label: 追剧
     - key: finished
@@ -40,6 +40,8 @@ zhuiju_vqq:
     - key: reserved
       label: 预约
 ```
+
+> `key` 是插件内部识别的分组标识，只能是 `airing` / `finished` / `reserved`；写了别的会被忽略并回落默认分组，重复的 key 会被去重。想换文案请改 `label`。
 
 ### Cookie（账号同步模式）
 
@@ -91,6 +93,7 @@ Cookie 同步模式下，分组规则是：`mark_label` 带「全 N 集 / 已完
 ```bash
 # 1. 同步数据（Cookie 过期自动兜底）
 npx hexo zhuiju -u
+# 等价写法：npx hexo zhuiju --update
 
 # 2. 构建
 npx hexo clean && npx hexo generate
@@ -99,6 +102,12 @@ npx hexo clean && npx hexo generate
 npx hexo s
 # 打开 http://localhost:4000/zhuijus/
 ```
+
+### 同步时的保护行为
+
+- 「加追」接口返回 0 条、但缓存里本来就有追剧/已完结数据时，判定为登录态异常，**保留旧数据不覆盖**（只用预约、加追本来为空的账号不受影响）；
+- 「预约」接口失败时沿用上次的预约缓存，不会清空预约分组；
+- 数据文件先写 `.tmp` 再重命名，写到一半中断也不会留下半截 JSON。
 
 ## 生成的文件
 

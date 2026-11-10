@@ -1,3 +1,5 @@
 node_modules/
 .DS_Store
 *.log
+# 腾讯视频登录态，绝对不能提交
+.vqq-cookie
